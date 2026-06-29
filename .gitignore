@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+stato_tavoli.json
+*.tmp
+.env
+.DS_Store
