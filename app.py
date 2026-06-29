@@ -1,9 +1,12 @@
 """
 BARCODE - Gestione Tavoli
-Web app per segnare lo stato scontrino POS di 50 tavoli.
+Web app per segnare lo stato scontrino POS dei tavoli.
 
-Stati (ciclo a ogni clic):
-    normale -> emesso -> incassato -> normale
+Due schermate:
+  - Tastierino: scegli la modalita (Normale / Scontrino emesso), digiti il
+    numero del tavolo e confermi. Aggiorna subito anche la griglia.
+  - Tavoli: la griglia di tutti i tavoli, ogni tap cambia stato in ciclo
+    (normale -> emesso -> incassato -> normale).
 
 Avvio locale:   python app.py
 Avvio Railway:  gestito dal Procfile con gunicorn
@@ -31,7 +34,7 @@ SECRET_KEY = os.environ.get("SECRET_KEY", "cambia-questa-chiave-segreta")
 
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
-app.permanent_session_lifetime = timedelta(hours=12)  # niente logout a metà turno
+app.permanent_session_lifetime = timedelta(hours=12)  # niente logout a meta turno
 
 _lock = threading.Lock()
 
@@ -123,15 +126,25 @@ def api_state():
 @app.route("/api/table/<int:tavolo_id>", methods=["POST"])
 @login_richiesto
 def api_table(tavolo_id):
+    """
+    Senza corpo: cicla lo stato (usato dal tap sulla griglia).
+    Con corpo JSON {"stato": "normale|emesso|incassato"}: imposta quello stato
+    (usato dal tastierino).
+    """
     if tavolo_id < 1 or tavolo_id > NUM_TAVOLI:
         abort(404)
     key = str(tavolo_id)
+    dati = request.get_json(silent=True) or {}
+    richiesto = dati.get("stato")
     with _lock:
-        attuale = stato_tavoli.get(key, "normale")
-        prossimo = STATI[(STATI.index(attuale) + 1) % len(STATI)]
-        stato_tavoli[key] = prossimo
+        if richiesto in STATI:
+            stato_tavoli[key] = richiesto
+        else:
+            attuale = stato_tavoli.get(key, "normale")
+            stato_tavoli[key] = STATI[(STATI.index(attuale) + 1) % len(STATI)]
+        nuovo = stato_tavoli[key]
         salva_stato(stato_tavoli)
-    return jsonify({"tavolo": tavolo_id, "stato": prossimo})
+    return jsonify({"tavolo": tavolo_id, "stato": nuovo})
 
 
 @app.route("/api/reset", methods=["POST"])
@@ -235,7 +248,7 @@ LOGIN_HTML = """<!DOCTYPE html>
 
 
 # ---------------------------------------------------------------------------
-# Pagina principale (griglia tavoli)
+# Pagina principale (tastierino + griglia tavoli)
 # ---------------------------------------------------------------------------
 
 INDEX_HTML = """<!DOCTYPE html>
@@ -254,23 +267,20 @@ INDEX_HTML = """<!DOCTYPE html>
     --testo:#F5F5F2; --muto:#8A8A94;
     --amber:#F5A623; --amber-soft:rgba(245,166,35,.14);
     --verde:#27C26E; --verde-soft:rgba(39,194,110,.15);
-    --rosso:#E2574C;
+    --rosso:#E2574C; --normale-dot:#3A3A44;
   }
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{background:var(--bg); color:var(--testo);
     font-family:"Inter",system-ui,-apple-system,sans-serif;}
   body{min-height:100dvh; padding-bottom:env(safe-area-inset-bottom)}
 
-  /* ---------- Header ---------- */
+  /* ---------- Header globale + navigazione ---------- */
   header{
     position:sticky; top:0; z-index:10; background:rgba(14,14,17,.92);
     backdrop-filter:blur(10px); border-bottom:1px solid var(--linea);
-    padding:14px 18px 0;
+    padding:14px 18px;
   }
-  .barra{
-    display:flex; align-items:center; gap:18px; flex-wrap:wrap;
-    padding-bottom:14px;
-  }
+  .barra{display:flex; align-items:center; gap:16px; flex-wrap:wrap}
   .brand{display:flex; align-items:center; gap:12px; margin-right:auto}
   .barcode{
     width:42px; height:26px; border-radius:3px;
@@ -286,25 +296,19 @@ INDEX_HTML = """<!DOCTYPE html>
   .eyebrow{font-family:"Space Mono",monospace; font-size:10px; letter-spacing:.22em;
     color:var(--muto); text-transform:uppercase;}
 
-  .legenda{display:flex; gap:9px; flex-wrap:wrap}
-  .chip{
-    display:flex; align-items:center; gap:8px; background:var(--surface);
-    border:1px solid var(--linea); border-radius:999px; padding:7px 13px 7px 11px;
-    font-size:13px; white-space:nowrap;
-  }
-  .chip .punto{width:10px; height:10px; border-radius:3px; flex:none}
-  .chip .conta{font-family:"Space Mono",monospace; font-weight:700; min-width:1.2em;
-    text-align:right}
-  .punto.normale{background:#3A3A44}
-  .punto.emesso{background:var(--amber)}
-  .punto.incassato{background:var(--verde)}
+  .nav-tabs{display:flex; gap:5px; background:var(--surface);
+    border:1px solid var(--linea); border-radius:12px; padding:4px}
+  .nav-tab{padding:9px 18px; border-radius:9px; border:none; background:transparent;
+    color:var(--muto); font-family:"Inter",sans-serif; font-weight:600; font-size:14px;
+    cursor:pointer; transition:background .15s, color .15s}
+  .nav-tab.attivo{background:var(--surface-hi); color:var(--testo)}
+  .nav-tab:focus-visible{outline:2px solid var(--amber); outline-offset:2px}
 
   .azioni{display:flex; align-items:center; gap:10px}
   .stato-rete{display:flex; align-items:center; gap:7px; font-size:12px; color:var(--muto)}
   .led{width:9px; height:9px; border-radius:50%; background:var(--verde);
-    box-shadow:0 0 0 0 rgba(39,194,110,.5)}
+    animation:battito 2.4s infinite}
   .stato-rete.offline .led{background:var(--rosso); animation:none}
-  .led{animation:battito 2.4s infinite}
   @keyframes battito{0%{box-shadow:0 0 0 0 rgba(39,194,110,.45)}
     70%{box-shadow:0 0 0 6px rgba(39,194,110,0)}100%{box-shadow:0 0 0 0 rgba(39,194,110,0)}}
   .btn{
@@ -317,12 +321,77 @@ INDEX_HTML = """<!DOCTYPE html>
   .btn:active{transform:scale(.97)}
   .btn:focus-visible{outline:2px solid var(--amber); outline-offset:2px}
 
-  /* ---------- Griglia tavoli ---------- */
   main{padding:18px}
-  .griglia{
-    display:grid; gap:12px;
-    grid-template-columns:repeat(auto-fill, minmax(112px, 1fr));
+
+  /* ---------- Vista TASTIERINO ---------- */
+  .tastierino{max-width:480px; margin:0 auto}
+  .modalita{display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:16px}
+  .mod-btn{
+    display:flex; align-items:center; justify-content:center; gap:10px; min-height:66px;
+    border:2px solid var(--linea); background:var(--surface); border-radius:16px;
+    color:var(--muto); font-family:"Inter",sans-serif; font-weight:600; font-size:15px;
+    cursor:pointer; transition:background .15s, border-color .15s, color .15s;
   }
+  .mod-btn .pallino{width:15px; height:15px; border-radius:5px; flex:none}
+  .mod-btn[data-mod="normale"] .pallino{background:var(--normale-dot)}
+  .mod-btn[data-mod="emesso"] .pallino{background:var(--amber)}
+  .mod-btn.attivo{color:var(--testo)}
+  .mod-btn[data-mod="normale"].attivo{border-color:#5A5A66; background:var(--surface-hi)}
+  .mod-btn[data-mod="emesso"].attivo{border-color:var(--amber); background:var(--amber-soft)}
+  .mod-btn:focus-visible{outline:2px solid var(--amber); outline-offset:2px}
+
+  .display-riga{display:flex; gap:12px; margin-bottom:14px}
+  .display{
+    flex:1; min-height:118px; background:var(--surface); border:1px solid var(--linea);
+    border-radius:16px; display:flex; flex-direction:column; align-items:center; justify-content:center;
+  }
+  .display .lbl{font-size:11px; letter-spacing:.18em; color:var(--muto);
+    text-transform:uppercase; margin-bottom:2px}
+  .display .num{font-family:"Space Mono",monospace; font-weight:700; font-size:64px;
+    line-height:1; color:var(--testo)}
+  .display .num.vuoto{color:var(--normale-dot)}
+  .conferma{
+    width:118px; flex:none; border:none; border-radius:16px; cursor:pointer;
+    background:var(--rosso); color:#fff; font-family:"Inter",sans-serif; font-weight:700;
+    font-size:15px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px;
+    transition:transform .08s, opacity .15s;
+  }
+  .conferma .segno{font-size:30px; line-height:1}
+  .conferma:active{transform:scale(.97)}
+  .conferma:disabled{opacity:.35; cursor:default}
+  .conferma:focus-visible{outline:2px solid #fff; outline-offset:2px}
+
+  .tasti{display:grid; grid-template-columns:repeat(3,1fr); gap:12px}
+  .tasto{
+    min-height:70px; background:var(--surface); border:1px solid var(--linea);
+    border-radius:16px; color:var(--testo); font-family:"Space Mono",monospace;
+    font-weight:700; font-size:28px; cursor:pointer; transition:transform .08s, background .15s;
+  }
+  .tasto:hover{background:var(--surface-hi)}
+  .tasto:active{transform:scale(.95)}
+  .tasto:focus-visible{outline:2px solid var(--amber); outline-offset:2px}
+  .tasto.canc{font-size:24px; color:var(--muto)}
+
+  .feedback{min-height:22px; text-align:center; margin-top:16px; font-size:14.5px;
+    font-weight:500; color:var(--muto)}
+  .feedback.errore{color:var(--rosso)}
+  .feedback.ok-emesso{color:var(--amber)}
+  .feedback.ok-normale{color:var(--testo)}
+  .feedback.ok-incassato{color:var(--verde)}
+
+  /* ---------- Vista TAVOLI (griglia) ---------- */
+  .legenda-barra{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:16px}
+  .legenda{display:flex; gap:9px; flex-wrap:wrap; margin-right:auto}
+  .chip{display:flex; align-items:center; gap:8px; background:var(--surface);
+    border:1px solid var(--linea); border-radius:999px; padding:7px 13px 7px 11px;
+    font-size:13px; white-space:nowrap}
+  .chip .punto{width:10px; height:10px; border-radius:3px; flex:none}
+  .chip .conta{font-family:"Space Mono",monospace; font-weight:700; min-width:1.2em; text-align:right}
+  .punto.normale{background:var(--normale-dot)}
+  .punto.emesso{background:var(--amber)}
+  .punto.incassato{background:var(--verde)}
+
+  .griglia{display:grid; gap:12px; grid-template-columns:repeat(auto-fill, minmax(112px, 1fr))}
   .tavolo{
     position:relative; overflow:hidden; cursor:pointer;
     min-height:96px; padding:16px 12px 12px;
@@ -331,34 +400,31 @@ INDEX_HTML = """<!DOCTYPE html>
     color:var(--testo); font-family:inherit;
     transition:transform .08s, background .18s, border-color .18s;
   }
-  .tavolo::before{
-    content:""; position:absolute; top:0; left:0; right:0; height:5px;
-    background:#3A3A44; transition:background .18s;
-  }
+  .tavolo::before{content:""; position:absolute; top:0; left:0; right:0; height:5px;
+    background:var(--normale-dot); transition:background .18s}
   .tavolo:active{transform:scale(.96)}
   .tavolo:focus-visible{outline:2px solid var(--amber); outline-offset:2px}
-  .numero{font-family:"Space Mono",monospace; font-weight:700; font-size:30px;
-    line-height:1}
+  .numero{font-family:"Space Mono",monospace; font-weight:700; font-size:30px; line-height:1}
   .etichetta{font-size:11px; letter-spacing:.04em; color:var(--muto);
     text-transform:uppercase; text-align:center; min-height:1.2em}
-
   .tavolo.stato-emesso{background:var(--amber-soft); border-color:rgba(245,166,35,.5)}
   .tavolo.stato-emesso::before{background:var(--amber)}
   .tavolo.stato-emesso .etichetta{color:var(--amber)}
-
   .tavolo.stato-incassato{background:var(--verde-soft); border-color:rgba(39,194,110,.5)}
   .tavolo.stato-incassato::before{background:var(--verde)}
   .tavolo.stato-incassato .etichetta{color:var(--verde)}
-
   .tavolo.pulsa{animation:flash .6s ease}
   @keyframes flash{0%{box-shadow:0 0 0 0 rgba(245,245,242,.35)}
     100%{box-shadow:0 0 0 8px rgba(245,245,242,0)}}
 
   @media (max-width:560px){
+    .brand{margin-right:0}
+    .nav-tabs{order:3; width:100%}
+    .nav-tab{flex:1; text-align:center}
+    .azioni{margin-left:auto}
     .griglia{grid-template-columns:repeat(auto-fill, minmax(88px, 1fr)); gap:9px}
     .numero{font-size:26px}
-    .brand{margin-right:0; width:100%}
-    .legenda{order:3; width:100%}
+    .display .num{font-size:54px}
   }
   @media (prefers-reduced-motion:reduce){
     *{animation:none !important; transition:none !important}
@@ -376,24 +442,72 @@ INDEX_HTML = """<!DOCTYPE html>
         </div>
       </div>
 
-      <div class="legenda" aria-hidden="true">
-        <div class="chip"><span class="punto normale"></span>Normale<span class="conta" id="conta-normale">0</span></div>
-        <div class="chip"><span class="punto emesso"></span>Scontrino emesso<span class="conta" id="conta-emessi">0</span></div>
-        <div class="chip"><span class="punto incassato"></span>Incassato<span class="conta" id="conta-incassati">0</span></div>
-      </div>
+      <nav class="nav-tabs">
+        <button class="nav-tab" type="button" data-vista="tastierino">Tastierino</button>
+        <button class="nav-tab" type="button" data-vista="tavoli">Tavoli</button>
+      </nav>
 
       <div class="azioni">
         <div class="stato-rete" id="stato-rete" title="Connessione al server">
           <span class="led"></span><span id="testo-rete">In linea</span>
         </div>
-        <button class="btn" id="btn-reset">Azzera tutti</button>
         <a class="btn" href="/logout">Esci</a>
       </div>
     </div>
   </header>
 
   <main>
-    <div class="griglia" id="griglia"></div>
+    <!-- ============ TASTIERINO ============ -->
+    <section id="vista-tastierino" class="tastierino">
+      <div class="modalita">
+        <button class="mod-btn attivo" type="button" data-mod="emesso">
+          <span class="pallino"></span>Scontrino emesso
+        </button>
+        <button class="mod-btn" type="button" data-mod="normale">
+          <span class="pallino"></span>Normale
+        </button>
+      </div>
+
+      <div class="display-riga">
+        <div class="display">
+          <span class="lbl">Tavolo n°</span>
+          <span class="num vuoto" id="display-num">—</span>
+        </div>
+        <button class="conferma" id="btn-conferma" type="button" disabled>
+          <span class="segno">✓</span>Conferma
+        </button>
+      </div>
+
+      <div class="tasti" id="tasti">
+        <button class="tasto" type="button" data-cifra="1">1</button>
+        <button class="tasto" type="button" data-cifra="2">2</button>
+        <button class="tasto" type="button" data-cifra="3">3</button>
+        <button class="tasto" type="button" data-cifra="4">4</button>
+        <button class="tasto" type="button" data-cifra="5">5</button>
+        <button class="tasto" type="button" data-cifra="6">6</button>
+        <button class="tasto" type="button" data-cifra="7">7</button>
+        <button class="tasto" type="button" data-cifra="8">8</button>
+        <button class="tasto" type="button" data-cifra="9">9</button>
+        <button class="tasto canc" type="button" id="tasto-canc">⌫</button>
+        <button class="tasto" type="button" data-cifra="0">0</button>
+        <button class="tasto canc" type="button" id="tasto-azzera">C</button>
+      </div>
+
+      <p class="feedback" id="feedback"></p>
+    </section>
+
+    <!-- ============ GRIGLIA TAVOLI ============ -->
+    <section id="vista-tavoli" style="display:none">
+      <div class="legenda-barra">
+        <div class="legenda" aria-hidden="true">
+          <div class="chip"><span class="punto normale"></span>Normale<span class="conta" id="conta-normale">0</span></div>
+          <div class="chip"><span class="punto emesso"></span>Scontrino emesso<span class="conta" id="conta-emessi">0</span></div>
+          <div class="chip"><span class="punto incassato"></span>Incassato<span class="conta" id="conta-incassati">0</span></div>
+        </div>
+        <button class="btn" id="btn-reset">Azzera tutti</button>
+      </div>
+      <div class="griglia" id="griglia"></div>
+    </section>
   </main>
 
 <script>
@@ -409,6 +523,7 @@ INDEX_HTML = """<!DOCTYPE html>
   let inVolo = new Set();      // id con richiesta POST in corso
   let primaCarica = true;
 
+  /* ---------- Griglia (comportamento invariato) ---------- */
   function creaGriglia(){
     for(let i = 1; i <= NUM_TAVOLI; i++){
       const btn = document.createElement("button");
@@ -454,12 +569,12 @@ INDEX_HTML = """<!DOCTYPE html>
 
   function render(nuovo){
     for(let i = 1; i <= NUM_TAVOLI; i++){
-      if(inVolo.has(i)) continue;                 // non sovrascrivere un tap in corso
+      if(inVolo.has(i)) continue;
       const ns = STATI.includes(nuovo[i]) ? nuovo[i] : "normale";
       const vs = statoCorrente[i] || "normale";
       if(ns !== vs){
         applicaStato(i, ns);
-        if(!primaCarica) pulsa(i);                // segnala modifiche da altri dispositivi
+        if(!primaCarica) pulsa(i);
       }
       statoCorrente[i] = ns;
     }
@@ -468,8 +583,7 @@ INDEX_HTML = """<!DOCTYPE html>
   }
 
   function segnaRete(ok){
-    if(ok) statoReteEl.classList.remove("offline");
-    else statoReteEl.classList.add("offline");
+    statoReteEl.classList.toggle("offline", !ok);
     testoReteEl.textContent = ok ? "In linea" : "Riconnessione…";
   }
 
@@ -480,37 +594,28 @@ INDEX_HTML = """<!DOCTYPE html>
       if(!r.ok) throw new Error("stato " + r.status);
       render(await r.json());
       segnaRete(true);
-    }catch(err){
-      segnaRete(false);
-    }
+    }catch(err){ segnaRete(false); }
   }
 
+  // Tap sulla griglia: cicla lo stato (nessun corpo nella richiesta)
   async function onTap(id){
     const attuale = statoCorrente[id] || "normale";
     const prossimo = STATI[(STATI.indexOf(attuale) + 1) % STATI.length];
-
-    // Aggiornamento ottimistico immediato
     statoCorrente[id] = prossimo;
     applicaStato(id, prossimo);
     aggiornaConteggi();
     inVolo.add(id);
-
     try{
-      const r = await fetch("/api/table/" + id, {
-        method:"POST", headers:{"Accept":"application/json"}
-      });
+      const r = await fetch("/api/table/" + id, {method:"POST", headers:{"Accept":"application/json"}});
       if(r.status === 401){ window.location.href = "/login"; return; }
       if(!r.ok) throw new Error("post " + r.status);
       const dati = await r.json();
-      statoCorrente[id] = dati.stato;             // valore autoritativo dal server
+      statoCorrente[id] = dati.stato;
       applicaStato(id, dati.stato);
       aggiornaConteggi();
       segnaRete(true);
-    }catch(err){
-      segnaRete(false);                           // il prossimo polling riallinea
-    }finally{
-      inVolo.delete(id);
-    }
+    }catch(err){ segnaRete(false); }
+    finally{ inVolo.delete(id); }
   }
 
   async function azzeraTutti(){
@@ -521,14 +626,119 @@ INDEX_HTML = """<!DOCTYPE html>
       if(!r.ok) throw new Error("reset " + r.status);
       render(await r.json());
       segnaRete(true);
+    }catch(err){ segnaRete(false); }
+  }
+  document.getElementById("btn-reset").addEventListener("click", azzeraTutti);
+
+  /* ---------- Tastierino ---------- */
+  let modalita = "emesso";
+  let buffer = "";
+
+  const elNum = document.getElementById("display-num");
+  const elConferma = document.getElementById("btn-conferma");
+  const elFeedback = document.getElementById("feedback");
+
+  function aggiornaDisplay(){
+    if(buffer === ""){
+      elNum.textContent = "—";
+      elNum.classList.add("vuoto");
+      elConferma.disabled = true;
+    }else{
+      elNum.textContent = buffer;
+      elNum.classList.remove("vuoto");
+      elConferma.disabled = false;
+    }
+  }
+
+  function premiCifra(c){
+    if(buffer.length >= 3) return;
+    if(buffer === "" && c === "0") return;   // niente zero iniziale
+    buffer += c;
+    elFeedback.textContent = "";
+    elFeedback.className = "feedback";
+    aggiornaDisplay();
+  }
+
+  function cancellaUltima(){
+    buffer = buffer.slice(0, -1);
+    aggiornaDisplay();
+  }
+
+  function azzeraBuffer(){
+    buffer = "";
+    elFeedback.textContent = "";
+    elFeedback.className = "feedback";
+    aggiornaDisplay();
+  }
+
+  function selezionaModalita(m){
+    modalita = m;
+    document.querySelectorAll(".mod-btn").forEach(b =>
+      b.classList.toggle("attivo", b.dataset.mod === m));
+  }
+
+  async function conferma(){
+    const n = parseInt(buffer, 10);
+    if(!n || n < 1 || n > NUM_TAVOLI){
+      elFeedback.textContent = "Tavolo non valido (1–" + NUM_TAVOLI + ")";
+      elFeedback.className = "feedback errore";
+      return;
+    }
+    try{
+      const r = await fetch("/api/table/" + n, {
+        method:"POST",
+        headers:{"Content-Type":"application/json", "Accept":"application/json"},
+        body: JSON.stringify({stato: modalita})
+      });
+      if(r.status === 401){ window.location.href = "/login"; return; }
+      if(!r.ok) throw new Error("post " + r.status);
+      const dati = await r.json();
+      statoCorrente[n] = dati.stato;
+      applicaStato(n, dati.stato);     // aggiorna subito anche la cella nella griglia
+      aggiornaConteggi();
+      azzeraBuffer();                  // pulisce il numero per il prossimo tavolo
+      elFeedback.textContent = "Tavolo " + n + " → " + ETICHETTE[dati.stato];
+      elFeedback.className = "feedback ok-" + dati.stato;
+      segnaRete(true);
     }catch(err){
+      elFeedback.textContent = "Errore di rete, riprova";
+      elFeedback.className = "feedback errore";
       segnaRete(false);
     }
   }
 
-  document.getElementById("btn-reset").addEventListener("click", azzeraTutti);
+  // Eventi tastierino
+  document.querySelectorAll(".tasto[data-cifra]").forEach(t =>
+    t.addEventListener("click", () => premiCifra(t.dataset.cifra)));
+  document.getElementById("tasto-canc").addEventListener("click", cancellaUltima);
+  document.getElementById("tasto-azzera").addEventListener("click", azzeraBuffer);
+  document.querySelectorAll(".mod-btn").forEach(b =>
+    b.addEventListener("click", () => selezionaModalita(b.dataset.mod)));
+  elConferma.addEventListener("click", conferma);
 
+  // Tastiera fisica (utile con iPad + tastiera)
+  document.addEventListener("keydown", (e) => {
+    if(document.getElementById("vista-tastierino").style.display === "none") return;
+    if(e.key >= "0" && e.key <= "9"){ premiCifra(e.key); }
+    else if(e.key === "Backspace"){ e.preventDefault(); cancellaUltima(); }
+    else if(e.key === "Enter"){ e.preventDefault(); if(!elConferma.disabled) conferma(); }
+  });
+
+  /* ---------- Navigazione fra le viste ---------- */
+  function mostraVista(v){
+    document.getElementById("vista-tastierino").style.display = (v === "tastierino") ? "block" : "none";
+    document.getElementById("vista-tavoli").style.display = (v === "tavoli") ? "block" : "none";
+    document.querySelectorAll(".nav-tab").forEach(t =>
+      t.classList.toggle("attivo", t.dataset.vista === v));
+  }
+  document.querySelectorAll(".nav-tab").forEach(t =>
+    t.addEventListener("click", () => mostraVista(t.dataset.vista)));
+
+  /* ---------- Avvio ---------- */
   creaGriglia();
+  aggiornaDisplay();
+  selezionaModalita("emesso");
+  mostraVista("tastierino");        // schermata iniziale: il tastierino
   caricaStato();
   setInterval(caricaStato, 4000);   // sincronizza fra i dispositivi ogni 4 secondi
 </script>
